@@ -2,6 +2,8 @@ package main
 
 import (
 	"aprendendoUberfx/httphandler"
+	"context"
+	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -16,21 +18,47 @@ type Config struct {
 	ApplicationConfig `yaml:"application"`
 }
 
-func main() {
-	conf := &Config{}
-	data, err := ioutil.ReadFile("config/base.yaml")
+func ProvideConfig() *Config {
+	conf := Config{}
+	data, _ := ioutil.ReadFile("config/base.yaml")
 
 	_ = yaml.Unmarshal([]byte(data), &conf)
 
+	return &conf
+}
+
+func ProvideLogger() *zap.SugaredLogger {
 	logger, _ := zap.NewProduction()
-	defer logger.Sync()
 	slogger := logger.Sugar()
 
-	mux := http.NewServeMux()
-	httphandler.New(mux, slogger)
+	return slogger
+}
 
-	err = http.ListenAndServe(conf.ApplicationConfig.Address, mux)
-	if err != nil {
-		return
-	}
+func main() {
+	fx.New(
+		fx.Provide(ProvideConfig),
+		fx.Provide(ProvideLogger),
+		fx.Provide(http.NewServeMux),
+		fx.Invoke(httphandler.New),
+		fx.Invoke(registerHooks),
+	).Run()
+
+}
+
+func registerHooks(lifecycle fx.Lifecycle, logger *zap.SugaredLogger, cfg *Config, mux *http.ServeMux) {
+	lifecycle.Append(
+		fx.Hook{
+			OnStart: func(context.Context) error {
+				go func() {
+					err := http.ListenAndServe(cfg.ApplicationConfig.Address, mux)
+					if err != nil {
+						logger.Error("Something went wrong while connecting the server")
+					}
+				}()
+				return nil
+			},
+			OnStop: func(context.Context) error {
+				return logger.Sync()
+			},
+		})
 }
